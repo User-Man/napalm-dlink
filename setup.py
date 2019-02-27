@@ -19,5 +19,5 @@ setup(
         'Operating System :: MacOS',
     ],
     include_package_data=True,
-    install_requires=['napalm>=2.0.0', 'netmiko>=1.4.2'],
+    install_requires=['napalm==2.3.3', 'netmiko>=1.4.2'],
 )
