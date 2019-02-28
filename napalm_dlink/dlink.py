@@ -28,7 +28,7 @@ from netmiko.ssh_exception import NetMikoTimeoutException
 # import NAPALM Base
 from napalm.base.base import NetworkDriver
 from napalm.base.utils import py23_compat
-from napalm.base.exceptions import  ConnectionException
+from napalm.base.exceptions import ConnectionException
 
 # Easier to store these as constants
 HOUR_SECONDS = 3600
@@ -43,7 +43,7 @@ class DLDriver(NetworkDriver):
     def __init__(self, hostname, username, password, timeout=60, optional_args=None):
         """NAPALM  D-Link Handler."""
 
-        # self.device = None
+        self.device = None
         self.hostname = hostname
         self.username = username
         self.password = password
@@ -51,6 +51,7 @@ class DLDriver(NetworkDriver):
         self.disable_paging = True
         self.platform = "dlink"
         self.profile = [self.platform]
+        self.default_clipaging_status = 'enable'
 
         # Get optional arguments
         if optional_args is None:
@@ -85,8 +86,6 @@ class DLDriver(NetworkDriver):
             k: optional_args.get(k, v)
             for k, v in netmiko_argument_map.items()
         }
-        self.changed = False
-        self.backup_file = ''
 
     def _parse_output(self, output, parser_regexp):
         result_list = []
@@ -124,6 +123,14 @@ class DLDriver(NetworkDriver):
                      (hours * 3600) + (minutes * 60) + seconds
         return uptime_sec
 
+    def _get_clipaging_status(self):
+        try:
+            self.device.send_command("show switch", 'Next Page')
+            self.device.send_command("q")  # For exit
+            return 'enable'
+        except IOError:
+            return 'disable'
+
     def open(self):
         """Open a connection to the device."""
         try:
@@ -136,16 +143,18 @@ class DLDriver(NetworkDriver):
                                          username=self.username,
                                          password=self.password,
                                          **self.netmiko_optional_args)
-            if self.disable_paging:
-                self.device.disable_paging(command="disable clipaging\n")
+            self.default_clipaging_status = self._get_clipaging_status()
+            if self.disable_paging and self.default_clipaging_status == 'enable':
+                self.device.disable_paging(command="disable clipaging")
 
         except NetMikoTimeoutException:
             raise ConnectionException('Cannot connect to {}'.format(self.hostname))
 
     def close(self):
         """Close the connection to the device."""
-        if self.changed and self.backup_file is not "":
-            self._delete_file(self.backup_file)
+        if self.disable_paging and self.default_clipaging_status == 'enable':
+            self.device.disable_paging(command="enable clipaging")
+
         self.device.disconnect()
         self.device = None
 
@@ -208,15 +217,20 @@ class DLDriver(NetworkDriver):
     def get_config(self, retrieve='all'):
         """ Get config from device. """
         config = {
-            'current_config': '',
-            'config_in_nvram': ''
+            'startup': '',
+            'running': '',
+            'candidate': ''
         }
-        if retrieve.lower() in ('current_config', 'all'):
-            command = ['disable clipaging', 'show config current_config']
-            config['current_config'] = py23_compat.text_type(self.cli(command))
-        if retrieve.lower() in ('config_in_nvram', 'all'):
-            command = ['show config config_in_nvram']
-            config['config_in_nvram'] = py23_compat.text_type(self.cli(command))
+        if retrieve.lower() in ('running', 'all'):
+            command = 'show config current_config'
+            config['running'] = py23_compat.text_type(self.device.send_command(command))
+            # Some D-link switch need run other command
+            if "Configuration" not in config['running']:
+                command = 'show config active'
+                config['running'] = py23_compat.text_type(self.device.send_command(command))
+        if retrieve.lower() in ('candidate', 'all'):
+            command = 'show config config_in_nvram'
+            config['candidate'] = py23_compat.text_type(self.device.send_command(command))
 
         return config
 
@@ -239,9 +253,9 @@ class DLDriver(NetworkDriver):
 
         output = self.device.send_command('show arpentry')
         parser_regexp = ("(?P<interface>^\w+)\s+"
-                       + "(?P<ip>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+"
-                       + "(?P<mac>([0-9A-F]{2}[:-]){5}([0-9A-F]{2}))\s+"
-                       + "(?P<type>(\w+(/\w+)*))")
+                         "(?P<ip>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+"
+                         "(?P<mac>([0-9A-F]{2}[:-]){5}([0-9A-F]{2}))\s+"
+                         "(?P<type>(\w+(/\w+)*))")
 
         return self._parse_output(output, parser_regexp)
 
@@ -276,10 +290,10 @@ class DLDriver(NetworkDriver):
 
         output = self.device.send_command('show fdb')
         parser_regexp = ("(?P<vid>\d+)\s+"
-                        +"(?P<vlan_name>\w+)\s+"
-                        +"(?P<mac>([0-9A-F]{2}[:-]){5}([0-9A-F]{2}))\s+"
-                        +"(?P<port>\d+)\s+"
-                        +"(?P<type>\w+)\s+"
-                        +"(?P<status>\w+)\s+")
+                         "(?P<vlan_name>\w+)\s+"
+                         "(?P<mac>([0-9A-F]{2}[:-]){5}([0-9A-F]{2}))\s+"
+                         "(?P<port>\d+)\s+"
+                         "(?P<type>\w+)\s+"
+                         "(?P<status>\w+)\s+")
 
         return self._parse_output(output, parser_regexp)
